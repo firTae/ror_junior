@@ -619,4 +619,153 @@ end
 ```
 rake db:migrate:redo
 ```
-`User.all` подхватывает свершившиеся изменения даже без `reload`.
+`User.all` подхватывает свершившиеся изменения даже без `reload!`.
+
+Только вот вывод консоли выглядит что-то чересчур беспорядочным. Чтобы сберечь свое время и повысить уровень профессионализма, совершим героическую эпопею установки и настройки гема [hirb](https://github.com/cldwalker/hirb):
+```ruby
+gem 'hirb'
+```
+А вот после бандлера начинаются пляски с бубном. Чтобы заставить `hirb` работать с `pry`, создаем конфигурационный файл для `pry` (в командном интерпретаторе):
+```bash
+nano ~/.pryrc
+```
+и запиливаем туда
+```ruby
+begin
+  require 'hirb'
+rescue LoadError
+  # Missing goodies, bummer
+end
+
+if defined? Hirb
+  # Slightly dirty hack to fully support in-session Hirb.disable/enable toggling
+  Hirb::View.instance_eval do
+    def enable_output_method
+      @output_method = true
+      @old_print = Pry.config.print
+      Pry.config.print = proc do |output, value|
+        Hirb::View.view_or_page_output(value) || @old_print.call(output, value)
+      end
+    end
+
+    def disable_output_method
+      Pry.config.print = @old_print
+      @output_method = nil
+    end
+  end
+
+  Hirb.enable
+end
+```
+Сохраняем, закрываем. Переписывание конфигов `hirb` — как раз те самые операции, для получения результатов которых нехобходимо именно выходить из консоли и запускать ее заново. Так и делаем. Пытаться понять приведенный выше фрагмент кода лучше в свободное от обучения на курсе время.
+
+Зато `User.all` теперь смотрится куда как приличнее. А вот если бы еще отображать только нужные колонки — так вообще было бы хорошо. Не вопрос. в **/config** создаем `hirb.yml` и оформляем его примерно так:
+```
+:output:
+  User:
+    :options:
+      :fields:
+        - id
+        - email
+        - admin
+        - banned
+        - created_at
+        - updated_at
+```
+После перезахода в консоль можно наслаждаться отображением `User.all`, опасно близким к совершенству.
+
+Давайте-ка как-нибудь обзовем всех юзеров:
+```ruby
+User.all.each do |user|
+  name = Faker::Name.name.split(' ')
+  fname, lname = name[-2], name[-1]
+  user.update(fname: fname, lname: lname)
+end
+```
+и настроим отображение соответствующих полей:
+```
+:output:
+  User:
+    :options:
+      :fields:
+        - id
+        - fname
+        - lname
+        - email
+        - admin
+        - banned
+        - created_at
+        - updated_at
+```
+На этом знакомство с `hirb` можно считать исчерпывающим.
+
+Не забудем переопределить генератор юзеров, а то они так анонимусами и останутся:
+```ruby
+def create_user
+  name = Faker::Name.name.split(' ')
+  fname, lname = name[-2], name[-1]
+  User.create(fname: fname, lname: lname,
+  email: Faker::Internet.email,
+  password: Faker::Internet.password)
+end
+```
+Вернемся к ORM — создадим модель `Post`:
+```
+rails g model Post title:string content:text user:references
+```
+Просматривая созданные файлы, не устаем удивляться тому, как хорошо работает генератор рельсов — даже `belongs_to :user` в модель вписал. Теперь только `User`'у осталось добавить, что у него
+```ruby
+has_many :posts
+```
+Неужели руками будем посты создавать? Ничуть не бывало, это совсем не ruby way. Вот как надо:
+```ruby
+def create_post
+  uids = User.all.map(&:id)
+  Post.create(title: Faker::Lorem.sentence,
+  content: Faker::Lorem.paragraph(2 + rand(8)),
+  user_id: uids.sample)
+end
+```
+И, как обычно:
+```ruby
+10.times { create_post }
+```
+`hirb` еще можно под это сконфигурировать:
+```
+:output:
+  User:
+    :options:
+      :fields:
+        - id
+        - fname
+        - lname
+        - email
+        - admin
+        - banned
+        - created_at
+        - updated_at
+  Post:
+    :options:
+      :fields:
+        - id
+        - title
+        - content
+        - user_id
+```
+
+А вот и ORM в действии:
+```ruby
+User.find(7).posts
+```
+```ruby
+Post.find(10).user
+```
+Уничтожить юзера с id=3 вместе со всеми его постами:
+```ruby
+User.destroy(3)
+```
+Чтобы удаление связанных объектов проходило корректно, `destroy` нужно вызывать на модели, а не на записи.
+```ruby
+User.find(3).destroy
+```
+связанных объектов не удалит.
