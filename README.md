@@ -724,7 +724,7 @@ end
 rails g model Post title:string content:text user:references
 ```
 ```
-rake db:migrate:redo
+rake db:migrate
 ```
 Просматривая созданные файлы, не устаем удивляться тому, как хорошо работает генератор рельсов — даже `belongs_to :user` в модель вписал. Теперь только `User`'у осталось добавить, что у него
 ```ruby
