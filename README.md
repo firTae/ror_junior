@@ -784,3 +784,117 @@ User.destroy(3)
 User.find(3).destroy
 ```
 связанных объектов не удалит.
+
+#### Getting real: контроллеры, скаффолдинг и немного предметной логики
+Теперь, когда мы вдоволь наигрались с базой виртуальных персонажей и их виртуальных мнений, самое время сделать функциональность нашего учебного проекта более полной: добавить возможность создания сущностей через интерфейс приложения.
+
+Вспомним про `devise` и сгенерируем-таки для него вьюхи:
+```
+rails generate devise:views
+```
+Теперь, если мы просто добавим в колонку над списком навигационных ссылок интуитивно понятный фрагмент
+```ruby
+- if signed_in?
+  p = link_to 'Sign out', :destroy_user_session, method: :delete, class: %i[btn btn-block btn-large btn-warning]
+- else
+  p = link_to 'Sign in', :user_session, class: %i[btn btn-block btn-large btn-success]
+  p = link_to 'Sign up', :new_user_registration, class: %i[btn btn-block btn-large btn-primary]
+```
+У нас сразу появится функциональность регистрации-входа-выхода пользователя. Спасибо `devise`, он очень простой и полезный.
+
+Теперь имеет смысл запустить генератор скаффолда из бумажного пособия
+```
+rails g scaffold Comment title:string content:text user:references post:references
+```
+и внимательно прочитать сгенерированный код, особенно файл **comments_controller.rb**, при необходимости сверяясь с бумажным, опять же, пособием.
+
+Сочтем скучные бытовые подробности, характерные для каждого контроллера, понятными и перейдем непосредственно к освоению важнейшего навыка при построении контроллеров — определения из параметров запроса только того, что необходимо, и полного исключения критически важных параметров из передачи через запросы. Для этого в самую первую очередь выпилим недрогнувшей рукой из `comment_params` упоминания `user_id` и `post_id`. Именно им двоим там совсем уж подчеркнуто не место:
+```ruby
+def comment_params
+  params.require(:comment).permit(:title, :content)
+end
+```
+Только так. Как экшн `create` комментариев узнает, кто автор комментария и какому сообщению он принадлежит, будем разбирать тщательно и неторопливо.
+
+Пока поставим еще один хороший гем для создания форм (тоже от [plataformatec](https://github.com/plataformatec), как и `devise`) — [simple_form](https://github.com/plataformatec/simple_form):
+```ruby
+gem 'simple_form'
+```
+Тут же запустим генератор _(а вообще привыкаем читать мануалы)_:
+```
+rails generate simple_form:install --bootstrap
+```
+Теперь мы готовы к созданию минималистичного интерфейса для реализации нашей задачи. Контроллер сообщений все-таки сделать надо, хотя бы так:
+```
+rails g controller Posts index show
+```
+Выглядеть он должен примерно так:
+```ruby
+class PostsController < ApplicationController
+  before_action :set_post, only: %i[show]
+  before_action :authenticate_user!, only: %i[show]
+
+  def index
+    @posts = Post.all.includes(:user)
+  end
+
+  def show
+    @comments = @post.comments.includes(:user)
+    @comment = Comment.new
+    user_session[:post_id] = @post.id
+  end
+
+  private
+
+  def set_post
+    @post = Post.find(params[:id])
+  end
+end
+```
+Здесь все знакомо по контроллеру из скаффолда, отдельно стоит упомянуть только то, что метод `authenticate_user!` добавлен гемом `devise`, да директива `includes` деятельно балансирует нагрузку и выхватывает из базы все, что нам понадобится для создания вьюхи.
+
+А вот, собственно, и вьюхи — незатейливая **posts/index.html.slim**:
+```ruby
+h1 Posts index
+table.table.table-striped
+  - @posts.each do |post|
+    tr
+      td = "#{post.user.fname} #{post.user.lname}"
+      td = link_to post.title, post
+      td = post.created_at
+```
+Обратите внимание, как красиво задается адрес ссылки — достаточно просто указать элемент, чтобы получить ссылку на его `show`.
+
+И весьма интересная **posts/show.html.slim**:
+```ruby
+h1 = @post.title
+p = @post.content
+h2 Comments:
+dl
+  - @comments.each do |comment|
+    dt
+      =' comment.title
+      ' by
+      span.label.label-success = comment.user.email
+    dd = comment.content
+h2 Add new comment
+= simple_form_for @comment do |f|
+  = f.input :title
+  = f.input :content
+  = f.submit
+```
+Обратите внимание на синтаксис использования `simple_form`. В мануале этого гема очень много интересного, обязательно уделите пристальное внимание.
+
+И теперь, чтобы все это заработало, необходимо вернуться к **comments_controller.rb**:
+```ruby
+  def create
+    @comment = current_user.comments.build(comment_params)
+    @comment.post_id = user_session[:post_id]
+    user_session.delete(:post_id)
+    ...
+```
+Благодаря гему `devise` у нас есть доступ к сессии пользователя (`user_session`) и возможность создавать сущности от имени текущего пользователя. Внимательные читатели обратили внимание, когда мы при показе сообщения записывали его `id` в сессию пользователя.
+
+Следует справедливости ради отметить, что ключ в сессии пользователя следовало бы назвать скорее `post_id_for_comment`, потому что контекст сообщения может быть использован где-то еще, но в целом пример передачи данных и через формы и запрос, и минуя их, можно считать законченным.
+
+В практической работе по этому принципу можно будет построить более сложные схемы безопасной передачи данных, исключающие уязвимости от манипуляций параметрами запросов.
