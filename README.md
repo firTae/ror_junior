@@ -898,3 +898,167 @@ h2 Add new comment
 Следует справедливости ради отметить, что ключ в сессии пользователя следовало бы назвать скорее `post_id_for_comment`, потому что контекст сообщения может быть использован где-то еще, но в целом пример передачи данных и через формы и запрос, и минуя их, можно считать законченным.
 
 В практической работе по этому принципу можно будет построить более сложные схемы безопасной передачи данных, исключающие уязвимости от манипуляций параметрами запросов.
+
+#### Javascript на рельсах
+Чем лучше вы знакомы с `javascript`, тем больше ошибок в его реализации на рельсах вы можете сделать. В связи с этим нам нужно сделать несколько важных шагов по предотвращению некоторых из этих возможных ошибок.
+
+Как вставить `javascript` на страницу rails-приложения. Возьмем, к примеру, **posts/show.html.slim** и будем над ней издеваться:
+```
+javascript:
+  alert('Никогда так не делайте!');
+```
+Тому есть несколько причин. Во-первых, в мире rails принято использовать `coffeescript`. Не обязательно, но принято. Не вопрос:
+```
+coffee:
+  alert "Никогда так не делайте, даже на coffescript!"
+```
+Еще `javascript` может использовать атрибуты вьюхи (`coffescript` ими давится при аналогичном синтаксисе):
+```
+javascript:
+  alert("Никогда так не делайте, даже с «#{@post.title}»!");
+```
+Как бы ни был соблазнителен такой подход, все равно так не делайте. Чуть позже мы рассмотрим правильный способ решения задачи передачи параметров из `ruby` в `javascript`. Впрочем, к нему нужно подготовиться, и для начала переведем **application.js** на `coffeescript`. К `javascript` вы в любой момент сможете вернуться потом, если захотите.
+
+Переименовываем **application.js** в **application.js.coffee**. Тут же нужно отметить, что в `javascript` комментарии обозначаются `//`, а в `coffescript` — `#`, и поэтому манифест включаемых файлов и каталогов с новым расширением должен теперь выглядеть примерно так:
+```coffee
+#= require jquery
+#= require jquery_ujs
+#= require twitter/bootstrap
+#= require_tree .
+```
+Теперь мы немного поподбираем способы красиво покрасить с помощью `javascript` ссылки в разные цвета. Для этого нам среди прочего понадобится функция (этим фрагментом, кстати, можно пользоваться как шпаргалкой по объявлению функций в `coffeescript`):
+```coffee
+paintIt = (element, backgroundColor, textColor) ->
+  element.style.backgroundColor = backgroundColor
+  if textColor?
+    element.style.color = textColor
+```
+По мере того, как наш `javascript` будет становиться все более ненавязчивым (unobtrusive), нам все больше и больше будет требоваться такого рода интерфейс, связывающий элементы DOM с функциями `javascript`:
+```coffee
+$ ->
+  $("a[data-background-color]").click ->
+    backgroundColor = $(this).data("background-color")
+    textColor = $(this).data("text-color")
+    paintIt(this, backgroundColor, textColor)
+```
+К слову, `$ ->` — так по-кофескриптовски будет `$(document).ready.function(...)`. С отступом можно будет писать то же, что и в скобках у этой `function()`. Довольно удобно.
+
+А нам нужно освоить лучшие практики формирования ненавязчивых атрибутов в хелперах:
+```ruby
+p = link_to('Paint it red', 'javascript:void(0)', data: {:'background-color' => '#990000', :'text-color' => '#fff'})
+p = link_to('Paint it green', 'javascript:void(0)', :'data-background-color' => '#009900')
+p = link_to('Paint it blue', 'javascript:void(0)', :'data-background-color' => '#000099')
+```
+Сочтя тему ненавязчивого (unobtrusive) `javascript` раскрытой, перейдем к изучению JS-шаблонизатора rails, поставим гем [skim](https://github.com/jfirebaugh/skim):
+```ruby
+gem 'skim'
+```
+И обязательно рассмотрим пример из его `readme` и заодно дополним его одним важным моментом. Создадим каталог **templates** в **app/assets/**. Чтобы шаблоны из этого каталога были доступны, в манифестной части **application.js.coffee** зарегистрируем его:
+```coffee
+#= require_tree ../templates/
+```
+Именно об этой тонкости умалчивает `readme`, а валить jst-шаблоны в одну кучу js-файлами всего приложения и отдельных контроллеров ой как не хочется.
+
+Однако сейчас все в порядке, и можно вернуться к примеру из `readme`. Создаем файл **test.jst.skim** в нашем каталоге **app/assets/templates** и пишем туда, собственно:
+```
+p Hello #{@world}!
+```
+Теперь в **application.js.coffee**
+```coffee
+  $("#skim-block").html(JST["test"]({world: "World"}))
+```
+Осталось только `#skim-block` куда-нибудь во вьюхе воткнуть, а то **Hello World** во всю `body` — это все-таки чересчур, у нас тут все-таки серьезный профессиональный курс.
+
+Теперь освоим простой ajax-запрос (настолько простой, что до уровня шпаргалки не дотягивает):
+```coffee
+  $("a#comments-index").click ->
+    $.ajax '/comments.json',
+      type: 'GET',
+      success: (data) ->
+        $("div#skim-block").replaceWith(JST['comments']({comments: data}))
+```
+Внимательные читатели заметят, что этому запросу для отображения результатов потребуется **comments.jst.skim**. Вот и он:
+```
+dl
+  - for comment in @comments
+    dt = comment.title
+    dd = comment.content
+```
+Все просто. И этот случай — исключение из правила не использовать `for`. Здесь другие итераторы просто не работают.
+
+Приделываем ко вьюхе недостающие упоминаемые в `javascript` блоки и убеждаемся, что все работает.
+
+Для полноты ощущений давайте создадим что-нибудь асинхронно и посмотрим заодно, как пробрасывать параметры из `ruby` в `javascript` и в какой-то мере наоборот. Ставим гем [gon](https://github.com/gazay/gon):
+```ruby
+gem 'gon'
+```
+Подключаем его ни много, ни мало в **application.html.slim**:
+```
+  = include_gon
+```
+В **posts_controller.rb** пишем:
+```ruby
+  def show
+    @comments = @post.comments.includes(:user)
+    @comment = Comment.new
+    user_session[:post_id] = @post.id
+    gon.push({:user_id => current_user.id,
+              :post_id => @post.id})
+  end
+```
+В **posts.js.coffee**:
+```coffee
+$ ->
+  $("div#skim-block").html(JST['post'](user: gon.user_id, post: gon.post_id))
+```
+Не забываем ставить упомянутые в JS элементы DOM во вьюхи (`#skim-block` там куда-нибудь). И создавать упомянутые шаблоны тоже не забываем. В **post.jst.skim**:
+```
+p
+  ' User to create comment:
+  = @user
+p
+  ' Post to be commented:
+  = @post
+```
+Тему передачи данных в JS можно считать раскрытой. Если вы собираетесь строить развесистые асинхронные интерфейсы, с гемом `gon` вам предстоит долгое и близкое знакомство.
+Тем временем мы проверили контекст приложения, не передаваемый через параметры запросов, и можем переходить к сути асинхронного создания комментария. Добавим в **posts.js.coffee**:
+```coffee
+  $("a#ajax_submit").click ->
+    $.ajax '/comments.json',
+      type: 'POST',
+      data:
+        comment:
+          title: $("input#comment_title")[0].value,
+          content: $("textarea#comment_content")[0].value,
+      success: (data) ->
+        $("div#skim-block").replaceWith(data)
+```
+Обратите внимание, что мы используем для ввода уже имеющиеся во вьюхе поля, созданные с помощью `simple_form`. Вьюха к этому времени может выглядеть уже примерно так:
+```ruby
+h1 = @post.title
+p = @post.content
+h2 Comments:
+dl
+  - @comments.each do |comment|
+    dt
+      =' comment.title
+      ' by
+      span.label.label-success = comment.user.email
+    dd = comment.content
+h2 Add new comment
+= simple_form_for @comment do |f|
+  = f.input :title
+  = f.input :content
+#skim-block
+p  = link_to('Create comment asynchronously', 'javascript:void(0)', id: :ajax_submit, class: %i[btn btn-block btn-large btn-primary])
+```
+Теперь остается только (на будущее) вооружиться более полной шпаргалкой по ajax-запросам на `coffeescript`:
+```coffee
+$.ajax '/yourUrlHere',
+  data :
+    key : 'value'
+  success  : (res, status, xhr) ->
+  error    : (xhr, status, err) ->
+  complete : (xhr, status) ->
+```
+В самостоятельной работе по допиливанию адекватного поведения асинхронного интерфейса создания комментариев можно обойтись и сокращенным вариантом, уже встречавшимся выше.
