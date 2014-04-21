@@ -1062,3 +1062,170 @@ $.ajax '/yourUrlHere',
   complete : (xhr, status) ->
 ```
 В самостоятельной работе по допиливанию адекватного поведения асинхронного интерфейса создания комментариев можно обойтись и сокращенным вариантом, уже встречавшимся выше.
+
+#### Решения самостоятельных работ, которым по ряду технических причин лучше быть зафиксированными здесь
+А то, к моему большому сожалению, желание сохранить интригу и возможность самостоятельного поиска оборачивается слишком большими потерями времени.
+
+Прежде всего необходимо сделать контроллер, который выдаст в `json` все комментарии к данному в параметрах запроса сообщению. Пишем в **routes.rb**:
+```ruby
+  get 'comments_by_post/:id', to: 'comments#index'
+```
+Эта строка располагает дополнить контроллер `comments#index` инструкциями на случай прихода ключа `:id` в параметрах:
+```ruby
+  def index
+    @comments = params[:id].present? ? Comment.where(post_id: params[:id]) : Comment.all
+  end
+```
+Фрагмент вполне можно считать самокомментированным, здесь довольно ясно просматривается близость `ruby` к обычному английскому.
+
+Придет в параметрах ключ `:id` или не придет, за выдачу данных в формате `json` будет отвечать все равно **app/views/comments/index.json.jbuilder**, который возвращает массив хэшей с данными запрошенных комментариев, поэтому шаблон **comments.jst.skim** сработает и здесь также, добавлять новый шаблон не нужно.
+
+Заменяем во вьюхе **posts/show.html.slim** статичный вывод комментариев на контейнер для асинхронной загрузки:
+```slim
+h2 Comments:
+/dl
+/  - @comments.each do |comment|
+/    dt
+/      =' comment.title
+/      ' by
+/      span.label.label-success = comment.user.email
+/    dd = comment.content
+#comments-block
+```
+Вывод просто закомментирован. Он может нам еще пригодиться.
+
+Теперь добавим в **posts.js.coffee** в часть `$ ->` код асинхронной загрузки комментариев с помощью нашего нового экшна:
+```coffee
+  $.ajax '/comments_by_post/' + gon.post_id + '.json',
+    type: 'GET',
+    success: (data) ->
+      $("div#comments-block").html(JST['comments']({comments: data}))
+```
+И эту же операцию нужно будет проводить при каждом успешном создании комментария:
+```coffee
+  $("a#ajax_submit").click ->
+    $.ajax '/comments.json',
+      type: 'POST',
+      data:
+        comment:
+          title: $("input#comment_title")[0].value,
+          content: $("textarea#comment_content")[0].value,
+      success: () ->
+        $.ajax '/comments_by_post/' + gon.post_id + '.json',
+          type: 'GET',
+          success: (data) ->
+            $("div#comments-block").html(JST['comments']({comments: data}))
+```
+Осталось только убрать из экшна **posts#show** строчку про
+```ruby
+    user_session.delete(:post_id)
+```
+убивающую всю асинхронность нашего интерфейса на корню (заодно, правда, показывающая, что синхронный интерфейс мы описали как раз очень правильно).
+
+Все работает, но код выглядит громоздким и повторяющимся. Выносим загрузку комментариев в функцию, обращаем внимание на обязательные пустые скобки при объявлении и вызове функции без аргументов в `coffeescript`:
+```coffee
+refreshComments = () ->
+  $.ajax '/comments_by_post/' + gon.post_id + '.json',
+    type: 'GET',
+    success: (data) ->
+      $("div#comments-block").html(JST['comments']({comments: data}))
+
+$ ->
+
+  refreshComments()
+
+  $("a#ajax_submit").click ->
+    $.ajax '/comments.json',
+      type: 'POST',
+      data:
+        comment:
+          title: $("input#comment_title")[0].value,
+          content: $("textarea#comment_content")[0].value,
+      success: () ->
+        refreshComments()
+```
+Да, так получше с точки зрения синтаксиса. С точки зрения производительности запускать дополнительный ajax-запрос, чтобы обработать результат предыдущего, очень странно и неразумно. Обычной практикой здесь является обработка ответа сервера в фазе `success`. Для этого, правда, в `json`-ответе успешного создания комментария нужно передавать не данные созданного комментария, как делает скаффолдовый контроллер по умолчанию, а данные всех комментариев к этому сообщению. В **comments#create** пишем:
+```ruby
+        format.json { render json: @comment.post.comments) }
+```
+Снова самокомментированный фрагмент на `ruby`, который вдобавок еще иллюстрирует и разительное отличие в восприятии человекоориентированного кода на `ruby` и машиноориентированного кода на `coffeescript`, который от неплохого, впрочем, синтаксического сахара более ясным для восприятия не становится. Хотя здесь утешает то, что на обычном `javascript` это все выглядело бы еще намного страшнее.
+
+Теперь код асинхронного создания комментария может выглядеть так:
+```coffee
+  $("a#ajax_submit").click ->
+    $.ajax '/comments.json',
+      type: 'POST',
+      data:
+        comment:
+          title: $("input#comment_title")[0].value,
+          content: $("textarea#comment_content")[0].value,
+      success: (data) ->
+        $("div#comments-block").html(JST['comments']({comments: data}))
+```
+Букв стало больше, зато мы избавились от дополнительного ajax-запроса. Теперь все-таки хорошо бы закончить рефакторинг **posts.js.coffee** и сделать его семантически целостным и ясным:
+```coffee
+refreshComments = (data) ->
+  $("div#comments-block").html(JST['comments']({comments: data}))
+
+$ ->
+
+  $.ajax '/comments_by_post/' + gon.post_id + '.json',
+    type: 'GET',
+    success: (data) ->
+      refreshComments(data)
+
+  $("a#ajax_submit").click ->
+    $.ajax '/comments.json',
+      type: 'POST',
+      data:
+        comment:
+          title: $("input#comment_title")[0].value,
+          content: $("textarea#comment_content")[0].value,
+      success: (data) ->
+        refreshComments(data)
+```
+Здесь мы выносим процедуру обновления комментариев в семантически верно названную функцию, которую вызываем в разных местах с разными параметрами, но нам и много лет спустя будет просто понять, что происходит в этом коде — всего-то благодаря верному именованию функции.
+
+Теперь, когда у нас все работает, хорошо бы вернуться к выводу комментариев, каким он был в статичной вьюхе, с указанием адреса электронной почты автора. Для этого нужно этот адрес передавать в `json`. А вот ссылку на просмотр отдельного комментария можно как раз не передавать. С учетом этого вьюха **comments/index.json.jbuilder** должна выглядеть примерно так:
+```ruby
+json.array!(@comments) do |comment|
+  json.extract! comment, :id, :title, :content, :user_id, :post_id
+  json.user { json.email comment.user.email }
+end
+```
+Это `ruby`, здесь все по-человчеcки и понятно, ORM это надежно здесь обеспечивает. Нам осталось отредактировать JS-шаблон **comments.jst.skim**:
+```
+dl
+  - for comment in @comments
+    dt
+      =' comment.title
+      ' by
+      span.label.label-success = comment.user.email
+    dd = comment.content
+```
+И добавить передачу данных пользователя в набор, передаваемый при создании комментария:
+```ruby
+        format.json { render json: @comment.post.comments.to_json(include: :user) }
+```
+Можно еще озаботиться производительностью и перечислить только используемые в отображении поля и комментария, и пользователя:
+```ruby
+        format.json { render json: @comment.post.comments.to_json(select: %i[title content], include: { user: { only: :email } } ) }
+```
+Дополнительно о развитии этого подхода и других интересных тонкостях генерации `json` на рельсах можно почитать [хабр](http://habrahabr.ru/post/152719/). Состояние особенной просветленности, как обычно на хабре, доставляют комментарии.
+
+То есть, фактически, сейчас мы описываем одно и то же отображение одних и тех же сущностей в двух разных местах нашего проекта. Этого, конечно, лучше никогда не делать, но в целях улучшения производительности иногда приходится. Поэтому обязательно добавляем в оба места соответствующие комментарии:
+
+**comments#create**:
+```ruby
+        format.json { render json: @comment.post.comments.to_json(select: %i[title content], include: { user: { only: :email } } ) }
+        # Дублируется в views/comments/index.json.jbuilder, при изменении обязательно проверять соответствие!
+```
+**views/comments/index.json.jbuilder**:
+```ruby
+# Дублируется в comments#create, при изменении обязательно проверять соответствие!
+json.array!(@comments) do |comment|
+  json.extract! comment, :id, :title, :content, :user_id, :post_id
+  json.user { json.email comment.user.email }
+end
+```
+То есть, все это дублирование и комментирование делается только ради того, чтобы при создании комментария не гонять дополнительный запрос. Если этот аспект производительности вас не беспокоит, можно остановиться на варианте с дополнительным запросом, с которого мы начинали.
